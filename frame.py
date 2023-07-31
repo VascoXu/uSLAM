@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 np.set_printoptions(suppress=True)
@@ -18,7 +19,6 @@ def poseRt(R, t):
     ret[:3, 3] = t
     return ret
 
-
 def extractRt(E):
     W = np.mat([[0,-1,0],[1,0,0],[0,0,1]],dtype=float)
     U,d,Vt = np.linalg.svd(E)
@@ -30,14 +30,16 @@ def extractRt(E):
     if np.sum(R.diagonal()) < 0:
         R = np.dot(np.dot(U, W.T), Vt)
     t = U[:, 2]
-
-    return poseRt(R, t)
+    if os.getenv('REVERSE'):
+        t *= -1
+    return np.linalg.inv(poseRt(R, t))
 
 
 def extract(img):
     orb = cv2.ORB_create()
+
     # detection
-    pts = cv2.goodFeaturesToTrack(np.mean(img, axis=2).astype(np.uint8), 1000, qualityLevel=0.01, minDistance=7)
+    pts = cv2.goodFeaturesToTrack(np.mean(img, axis=2).astype(np.uint8), 3000, qualityLevel=0.01, minDistance=7)
     
     # extraction
     kps = [cv2.KeyPoint(x=f[0][0], y=f[0][1], size=20) for f in pts]
@@ -58,33 +60,35 @@ def match_frames(f1, f2):
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
     matches = bf.knnMatch(f1.des, f2.des, k=2)
 
-    # Lowe's ratio test
     ret = []
     idx1, idx2 = [], []
 
-    for m,n in matches:
+    # Lowe's ratio test
+    for m, n in matches:
+        # TODO: find out what .distance means   
         if m.distance < 0.75*n.distance:
             p1 = f1.kps[m.queryIdx]
             p2 = f2.kps[m.trainIdx]
 
             if np.linalg.norm((p1-p2)) < 0.1*np.linalg.norm([f1.w, f1.h]) and m.distance < 32:
-                # keep around the indices
+                # avoid duplicates (TODO: not sure why there would be duplicates)
                 if m.queryIdx not in idx1 and m.trainIdx not in idx2:
+                    # keep around the indices
                     idx1.append(m.queryIdx)
                     idx2.append(m.trainIdx)
                 
                     ret.append((p1, p2))
 
     # no duplicates
-    # assert(len(set(idx1)) == len(idx1))
-    # assert(len(set(idx2)) == len(idx2))
+    assert(len(set(idx1)) == len(idx1))
+    assert(len(set(idx2)) == len(idx2))
 
     assert len(ret) >= 8
     idx1 = np.array(idx1)
     idx2 = np.array(idx2)
     ret = np.array(ret)
 
-    # fit matrix
+    # fit matrix and ignore outliers
     model, inliers = ransac((ret[:, 0], ret[:, 1]),
                             #EssentialMatrixTransform,
                             FundamentalMatrixTransform,
@@ -93,9 +97,8 @@ def match_frames(f1, f2):
                             #residual_threshold=0.02,
                             max_trials=100)
     
-    print("Matches: %d -> %d -> %d -> %d" % (len(f1.des), len(matches), len(inliers), sum(inliers)))
+    print(f'Matches: {len(f1.des)} -> {len(matches)} -> {len(inliers)} -> {sum(inliers)}')
 
-    # ignore outliers
     Rt = extractRt(model.params)
 
     # return

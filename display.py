@@ -6,8 +6,7 @@ class Display:
         sdl2.ext.init()
 
         self.W, self.H = H, W
-        self.window = sdl2.ext.Window('slam', size=(W, H), position=(-500,
-        -500))
+        self.window = sdl2.ext.Window('slam', size=(W, H), position=(-500, -500))
 
         self.window.show()
 

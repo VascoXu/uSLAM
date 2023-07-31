@@ -44,7 +44,7 @@ class Map(object):
         self.q = None
 
     # *** optimizer ***
-    def optimize(self):
+    def optimize(self, local_window=LOCAL_WINDOW, fix_points=False, verbose=False):
         # create g2o optimizer
         opt = g2o.SparseOptimizer()
         solver = g2o.BlockSolverSE3(g2o.LinearSolverCholmodSE3())
@@ -53,11 +53,11 @@ class Map(object):
 
         robust_kernel = g2o.RobustKernelHuber(np.sqrt(5.991))
 
-        local_frames = self.frames[-LOCAL_WINDOW:]
+        local_frames = self.frames[-local_window:]
 
         # add frames to graph
         for f in self.frames:
-            pose = f.pose
+            pose = np.linalg.inv(f.pose)
             sbacam = g2o.SBACam(g2o.SE3Quat(pose[0:3, 0:3], pose[0:3, 3]))
             sbacam.set_cam(f.K[0][0], f.K[1][1], f.K[0][2], f.K[1][2], 1.0)
 
@@ -77,7 +77,7 @@ class Map(object):
             pt.set_id(p.id + PT_ID_OFFSET)
             pt.set_estimate(p.pt[0:3])
             pt.set_marginalized(True)
-            pt.set_fixed(False)
+            pt.set_fixed(fix_points)
             opt.add_vertex(pt)
 
             for f in p.frames:
@@ -99,40 +99,43 @@ class Map(object):
             est = opt.vertex(f.id).estimate()
             R = est.rotation().matrix()
             t = est.translation()
-            f.pose = poseRt(R, t)
+            f.pose = np.linalg.inv(poseRt(R, t))
 
-        # put points back (and cull)
-        new_points = []
-        for p in self.points:
-            vert = opt.vertex(p.id + PT_ID_OFFSET)
-            if vert is None:
+        if not fix_points:
+            # put points back (and cull)
+            new_points = []
+            for p in self.points:
+                vert = opt.vertex(p.id + PT_ID_OFFSET)
+                if vert is None:
+                    new_points.append(p)
+                    continue
+                est = vert.estimate()
+            
+                # 2 match point that's old
+                old_point = len(p.frames) == 2 and p.frames[-1] not in local_frames
+
+                # compute reprojection error
+                errs = []
+                for f in p.frames:
+                    uv = f.kpus[f.pts.index(p)]
+                    proj = np.dot(np.dot(f.K, f.pose[:3]),
+                                  np.array([est[0], est[1], est[2], 1.0]))
+                    proj = proj[0:2] / proj[2]
+                    errs.append(np.linalg.norm(proj-uv))
+
+                # cull
+                """
+                if (old_point and np.mean(errs) > 30) or np.mean(errs) > 100:
+                    p.delete()
+                    continue
+                """
+
+                p.pt = np.array(est)
                 new_points.append(p)
-                continue
-            est = vert.estimate()
-        
-            # 2 match point that's old
-            old_point = len(p.frames) == 2 and p.frames[-1] not in local_frames
 
-            # compute reprojection error
-            errs = []
-            for f in p.frames:
-                uv = f.kpus[f.pts.index(p)]
-                proj = np.dot(np.dot(f.K, np.linalg.inv(f.pose)[:3]),
-                              np.array([est[0], est[1], est[2], 1.0]))
-                proj = proj[0:2] / proj[2]
-                errs.append(np.linalg.norm(proj-uv))
+            self.points = new_points
 
-            # cull
-            if (old_point and np.mean(errs) > 30) or np.mean(errs) > 100:
-                p.delete()
-                continue
-
-            p.pt = np.array(est)
-            new_points.append(p)
-
-        self.points = new_points
-
-        return opt.chi2()
+        return opt.active_chi2()
 
     # *** viewer ***
 
@@ -165,10 +168,11 @@ class Map(object):
                     pango.Attach(1),
                     pango.Attach(0),
                     pango.Attach(1),
-                    -640.0 / 480.0,
+                    w/h,
                 )
                 .SetHandler(self.handler)
         )
+        self.d_cam.Activate()
 
     def viewer_refresh(self, q):
         if not q.empty():
@@ -209,7 +213,8 @@ class Map(object):
 
         poses, pts, colors = [], [], []
         for f in self.frames:
-            poses.append(f.pose)
+            # invert poses for display only
+            poses.append(np.linalg.inv(f.pose))
         for p in self.points:
             pts.append(p.pt)
             colors.append(p.color)
