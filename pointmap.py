@@ -24,6 +24,18 @@ class Point(object):
         mapp.max_point += 1
         mapp.points.append(self)
 
+    def homogeneous(self):
+        return np.array([self.pt[0], self.pt[1], self.pt[2], 1.0])
+
+    def orb(self):
+        # TODO: average orbs in hamming space
+        #des = []
+        #for f in self.frames:
+        #des.append(f.des[f.pts.index(self)])
+        #print("***", des)
+        f = self.frames[-1]
+        return f.des[f.pts.index(self)]
+
     def delete(self):
         for f in self.frames:
             f.pts[f.pts.index(self)] = None
@@ -31,7 +43,7 @@ class Point(object):
 
     def add_observation(self, frame, idx):
         frame.pts[idx] = self
-        self.frames.append(frame)
+        self.frames.append(frame) # frame sees this point
         self.idxs.append(idx)
 
 
@@ -124,15 +136,14 @@ class Map(object):
                     errs.append(np.linalg.norm(proj-uv))
 
                 # cull
-                """
-                if (old_point and np.mean(errs) > 30) or np.mean(errs) > 100:
+                if old_point or np.mean(errs) > 100:
                     p.delete()
                     continue
-                """
 
                 p.pt = np.array(est)
                 new_points.append(p)
 
+            print(f'Culled:     {len(self.points) - len(new_points)} points')
             self.points = new_points
 
         return opt.active_chi2()
@@ -187,23 +198,31 @@ class Map(object):
         self.d_cam.Activate(self.s_cam)
         
         if self.state is not None:
-            # draw poses
-            gl.glPointSize(10)
-            gl.glColor3f(0.0, 1.0, 0.0)
-            pango.glDrawPoints(ppts)
+            if self.state[0].shape[0] >= 2:
+                # draw poses
+                gl.glPointSize(10)
+                gl.glColor3f(0.0, 1.0, 0.0)
+                pango.glDrawPoints(ppts[:-1])
+
+            if self.state[0].shape[0] >= 1:
+                # draw current pose as yellow
+                gl.glPointSize(10)
+                gl.glColor3f(1.0, 1.0, 0.0)
+                pango.glDrawPoints(ppts[-1:])
 
             # draw keypoints
-            if os.getenv("COLOR"):
-                # draw points with original color
-                for i in range(len(spts)):
-                    gl.glPointSize(5)
-                    gl.glColor3f(*self.state[2][i])
-                    pango.glDrawPoints([spts[i]])
-            else:
-                # draw points in white
-                gl.glPointSize(5)
-                gl.glColor3f(1.0, 1.0, 1.0)
-                pango.glDrawPoints(spts)
+            if self.state[1].shape[0] != 0:
+                if os.getenv("COLOR"):
+                    # draw points with original color
+                    for i in range(len(spts)):
+                        gl.glPointSize(3)
+                        gl.glColor3f(*self.state[2][i])
+                        pango.glDrawPoints([spts[i]])
+                else:
+                    # draw points in white
+                    gl.glPointSize(3)
+                    gl.glColor3f(1.0, 1.0, 1.0)
+                    pango.glDrawPoints(spts)
 
         pango.FinishFrame()
 
