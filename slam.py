@@ -10,7 +10,7 @@ import g2o
 
 from frame import Frame, match_frames, denormalize, IRt
 from pointmap import Map, Point
-from display import Display
+from display import Display2D, Display3D
 
 
 def hamming_distance(a, b):
@@ -33,12 +33,12 @@ def triangulate(pose1, pose2, pts1, pts2):
     # return cv2.triangulatePoints(pose1[:3], pose2[:3], pts1.T, pts2.T).T
 
 def process_frame(img):
+    start_time = time.time()
     img = cv2.resize(img, (W, H))
     frame = Frame(mapp, img, K)
     if frame.id == 0:
         return 
 
-    print(f'\n*** frame {frame.id} ***')
 
     f1 = mapp.frames[-1] # most recent frame
     f2 = mapp.frames[-2] # second to most recent frame
@@ -80,10 +80,13 @@ def process_frame(img):
             q = f1.kd.query_ball_point(projs[i], 5)
             for m_idx in q:
                 if f1.pts[m_idx] is None:
-                    o_dist = hamming_distance(p.orb(), f1.des[m_idx])
-                    if o_dist < 32:
-                        p.add_observation(f1, m_idx) # add already seen points
-                        sbp_pts_count += 1
+                    # if any descriptors within 32
+                    for o in p.orb():
+                        o_dist = hamming_distance(o, f1.des[m_idx])
+                        if o_dist < 32:
+                            p.add_observation(f1, m_idx) # add already seen points
+                            sbp_pts_count += 1
+                            break
 
     # unmatched points (i.e., first time match), we added matched points above
     good_pts4d = np.array([f1.pts[i] is None for i in idx1])
@@ -95,24 +98,11 @@ def process_frame(img):
     # homogeneous 3-D coords
     pts4d /= pts4d[:, 3:]
 
-    # reject points locally in front of camera
-    pts_tri_local = triangulate(Rt, np.eye(4), f1.kps[idx1], f2.kps[idx2]) # idx1, idx2 are the indices of the matched points
-    pts_tri_local /= pts_tri_local[:, 3:]
-    good_pts4d &= pts_tri_local[:, 2] > 0
+    # points locally in front of camera (BROKEN?)
+    # pts_tri_local = np.dot(f1.pose, pts4d.T).T
+    # good_pts4d &= pts_tri_local[:, 2] > 0
 
-    """
-    # homogeneous 3D coords 
-    # reject points behind the camera
-    pts_tri_local /= pts_tri_local[:, 3:]
-    """
-
-    print(f'Adding:   {np.sum(good_pts4d)}, new points, {sbp_pts_count} search by projection')
-
-    """
-    # project into world
-    pts4d = np.dot(f1.pose, pts_tri_local.T).T
-    good_pts4d &= pts_tri_local[:, 2] > 0
-    """
+    print(f'Adding:  {np.sum(good_pts4d)}, new points, {sbp_pts_count} search by projection')
 
     for i,p in enumerate(pts4d):
         if not good_pts4d[i]:
@@ -133,42 +123,53 @@ def process_frame(img):
         u2, v2 = denormalize(K, pt2)
 
         if f1.pts[i1] is not None:
-            cv2.circle(img, (u1, v1), color=(0, 255, 0), radius=3)
+            if len(f1.pts[i1].frames) >= 5:
+                cv2.circle(img, (u1, v1), color=(0, 255, 0), radius=3)
+            else:
+                cv2.circle(img, (u1, v1), color=(0, 128, 0), radius=3)
         else:
             # red means they don't match
-            cv2.circle(img, (u1, v1), color=(0, 0, 255), radius=3)
+            cv2.circle(img, (u1, v1), color=(0, 0, 0), radius=3)
 
         cv2.line(img, (u1, v1), (u2, v2), color=(255, 0, 0))
 
     # 2D display
-    if disp is not None:
-        disp.paint(img)
+    if disp2d is not None:
+        disp2d.paint(img)
 
     # optimize the map
-    if os.getenv("OPT") and frame.id >= 4 and frame.id%3 == 0:
+    if os.getenv("OPT") and frame.id >= 4 and frame.id%5 == 0:
         err = mapp.optimize()
         print(f'Optimize {err} units of error')
 
-    # 3D map
-    mapp.display()
-    print("Map: %d points, %d frames" % (len(mapp.points), len(mapp.frames)))
+    # 3D display
+    if disp3d is not None:
+        disp3d.paint(mapp)
+    
+    print(f"Map:     %d points, %d frames" % (len(mapp.points), len(mapp.frames)))
+    print(f"Time:    {(time.time()-start_time)*1000.0}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(f'{sys.argv[0]} <video.mp4>')
         exit(1)
 
-    cap = cv2.VideoCapture(sys.argv[1])
-
+   
     # display views
     mapp = Map()
-    if os.getenv("D3D") is not None:
-        mapp.create_viewer()
+    disp2d = None
+    disp3d = None
+
+    disp3d = Display3D()
+    cap = cv2.VideoCapture(sys.argv[1])
 
     # camera parameters
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    CNT = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     F = float(os.getenv("F", "525"))
+    if os.getenv("SEEK") is not None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(os.getenv("FRAME")))
 
     if W > 1024:
         downscale = 1024.0/W
@@ -180,14 +181,15 @@ if __name__ == "__main__":
     K = np.array([[F, 0, W//2], [0, F, H//2], [0, 0, 1]])
     Kinv = np.linalg.inv(K)
 
-    disp = None
-    if os.getenv("D2D") is not None:
-        disp = Display(W, H) 
+    disp2d = Display2D(W, H) 
 
+    i = 0
     while cap.isOpened():
         ret, frame = cap.read()
+        print(f'\n*** frame {i}/{CNT} ***')
         if ret == True:
             process_frame(frame)
         else:
             break
+        i += 1
 

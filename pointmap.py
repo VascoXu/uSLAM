@@ -1,11 +1,8 @@
 import os
 import numpy as np
 from frame import poseRt
-import pypangolin as pango
-import OpenGL.GL as gl
 import g2o
 
-from multiprocessing import Process, Queue
 
 LOCAL_WINDOW = 20
 
@@ -19,22 +16,13 @@ class Point(object):
         self.frames = []
         self.idxs = []
         self.color = np.copy(color)
-
-        self.id = mapp.max_point
-        mapp.max_point += 1
-        mapp.points.append(self)
+        self.id = mapp.add_point(self)
 
     def homogeneous(self):
         return np.array([self.pt[0], self.pt[1], self.pt[2], 1.0])
 
     def orb(self):
-        # TODO: average orbs in hamming space
-        #des = []
-        #for f in self.frames:
-        #des.append(f.des[f.pts.index(self)])
-        #print("***", des)
-        f = self.frames[-1]
-        return f.des[f.pts.index(self)]
+        return [f.des[f.pts.index(self)] for f in self.frames]
 
     def delete(self):
         for f in self.frames:
@@ -51,9 +39,20 @@ class Map(object):
     def __init__(self):
         self.frames = []
         self.points = []
+        self.max_frame = 0
         self.max_point = 0 
-        self.state = None
-        self.q = None
+
+    def add_point(self, point):
+        ret = self.max_point
+        self.max_point += 1
+        self.points.append(point)
+        return ret
+
+    def add_frame(self, frame):
+        ret = self.max_frame
+        self.max_frame += 1
+        self.frames.append(frame)
+        return ret
 
     # *** optimizer ***
     def optimize(self, local_window=LOCAL_WINDOW, fix_points=False, verbose=False):
@@ -104,7 +103,7 @@ class Map(object):
 
         #opt.set_verbose(False)
         opt.initialize_optimization()
-        opt.optimize(50)
+        opt.optimize(20)
 
         # put frames back
         for f in self.frames:
@@ -123,8 +122,8 @@ class Map(object):
                     continue
                 est = vert.estimate()
             
-                # 2 match point that's old
-                old_point = len(p.frames) == 2 and p.frames[-1] not in local_frames
+                # <= 3 match point that's old
+                old_point = len(p.frames) <= 3 and p.frames[-1] not in local_frames
 
                 # compute reprojection error
                 errs = []
@@ -136,107 +135,19 @@ class Map(object):
                     errs.append(np.linalg.norm(proj-uv))
 
                 # cull
-                if old_point or np.mean(errs) > 100:
+                if old_point or np.mean(errs) > 5:
                     p.delete()
                     continue
 
                 p.pt = np.array(est)
                 new_points.append(p)
 
-            print(f'Culled:     {len(self.points) - len(new_points)} points')
+            print(f'Culled:  {len(self.points) - len(new_points)} points')
             self.points = new_points
 
         return opt.active_chi2()
 
-    # *** viewer ***
 
-    def create_viewer(self):
-        self.q = Queue()
-        self.vp = Process(target=self.viewer_thread, args=(self.q,))
-        self.vp.daemon = True
-        self.vp.start()
 
-    def viewer_thread(self, q):
-        self.viewer_init(1024, 768)
-        while 1:
-            self.viewer_refresh(q)
-
-    def viewer_init(self, w, h):
-        pango.CreateWindowAndBind('Main', w, h)
-        gl.glEnable(gl.GL_DEPTH_TEST)
-        
-        pm = pango.ProjectionMatrix(w, h, 420, 420, w//2, h//2, 0.2, 10000)
-        mv = pango.ModelViewLookAt(0, -10, -8,
-                                   0, 0, 0,
-                                   0, -1, 0)
-        self.s_cam = pango.OpenGlRenderState(pm, mv)
-
-        self.handler = pango.Handler3D(self.s_cam)
-        self.d_cam = (
-                pango.CreateDisplay()
-                .SetBounds(
-                    pango.Attach(0),
-                    pango.Attach(1),
-                    pango.Attach(0),
-                    pango.Attach(1),
-                    w/h,
-                )
-                .SetHandler(self.handler)
-        )
-        self.d_cam.Activate()
-
-    def viewer_refresh(self, q):
-        if not q.empty():
-            self.state = q.get()
-
-        # turn state into points
-        ppts = np.array([d[:3, 3] for d in self.state[0]])
-        spts = np.array(self.state[1])[:, :3]
-
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
-        self.d_cam.Activate(self.s_cam)
-        
-        if self.state is not None:
-            if self.state[0].shape[0] >= 2:
-                # draw poses
-                gl.glPointSize(10)
-                gl.glColor3f(0.0, 1.0, 0.0)
-                pango.glDrawPoints(ppts[:-1])
-
-            if self.state[0].shape[0] >= 1:
-                # draw current pose as yellow
-                gl.glPointSize(10)
-                gl.glColor3f(1.0, 1.0, 0.0)
-                pango.glDrawPoints(ppts[-1:])
-
-            # draw keypoints
-            if self.state[1].shape[0] != 0:
-                if os.getenv("COLOR"):
-                    # draw points with original color
-                    for i in range(len(spts)):
-                        gl.glPointSize(3)
-                        gl.glColor3f(*self.state[2][i])
-                        pango.glDrawPoints([spts[i]])
-                else:
-                    # draw points in white
-                    gl.glPointSize(3)
-                    gl.glColor3f(1.0, 1.0, 1.0)
-                    pango.glDrawPoints(spts)
-
-        pango.FinishFrame()
-
-    def display(self):
-        if self.q is None:
-            return
-
-        poses, pts, colors = [], [], []
-        for f in self.frames:
-            # invert poses for display only
-            poses.append(np.linalg.inv(f.pose))
-        for p in self.points:
-            pts.append(p.pt)
-            colors.append(p.color)
-        self.q.put((np.array(poses), np.array(pts), np.array(colors)/256.0))
 
 

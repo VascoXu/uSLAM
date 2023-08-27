@@ -1,7 +1,7 @@
 import os
 import cv2
 import numpy as np
-from scipy.spatial import KDTree
+from scipy.spatial import cKDTree
 np.set_printoptions(suppress=True)
 
 from skimage.measure import ransac
@@ -73,7 +73,7 @@ def match_frames(f1, f2):
             p2 = f2.kps[m.trainIdx]
             
             # ensure matched points are not too far apart from each other (since they are consecutive frames in a video)
-            if np.linalg.norm((p1-p2)) < 0.1*np.linalg.norm([f1.w, f1.h]) and m.distance < 32:
+            if m.distance < 32:
                 # avoid duplicates (TODO: not sure why there would be duplicates)
                 if m.queryIdx not in idx1 and m.trainIdx not in idx2:
                     # keep around the indices
@@ -117,10 +117,9 @@ class Frame(object):
         self.h, self.w = img.shape[0:2]
 
         self.kpus, self.des = extract(img)
-        self.kd = KDTree(self.kpus)
+        self.kd = cKDTree(self.kpus)
         self.kps = normalize(self.Kinv, self.kpus)
-
         self.pts = [None]*len(self.kps)
         
-        self.id = len(mapp.frames)
-        mapp.frames.append(self)
+        self.id = mapp.add_frame(self)
+
