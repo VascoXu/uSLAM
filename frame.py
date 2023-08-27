@@ -64,6 +64,7 @@ def match_frames(f1, f2):
 
     ret = []
     idx1, idx2 = [], []
+    idx1s, idx2s = set(), set()
 
     # Lowe's ratio test
     for m, n in matches:
@@ -75,11 +76,12 @@ def match_frames(f1, f2):
             # ensure matched points are not too far apart from each other (since they are consecutive frames in a video)
             if m.distance < 32:
                 # avoid duplicates (TODO: not sure why there would be duplicates)
-                if m.queryIdx not in idx1 and m.trainIdx not in idx2:
+                if m.queryIdx not in idx1s and m.trainIdx not in idx2s:
                     # keep around the indices
                     idx1.append(m.queryIdx)
                     idx2.append(m.trainIdx)
-                
+                    idx1s.add(m.queryIdx)
+                    idx2s.add(m.trainIdx)
                     ret.append((p1, p2))
 
     # no duplicates
@@ -110,16 +112,31 @@ def match_frames(f1, f2):
 
 
 class Frame(object):
-    def __init__(self, mapp, img, K):
+    def __init__(self, mapp, img, K, pose=np.eye(4)):
         self.K = K
-        self.Kinv = np.linalg.inv(self.K)
-        self.pose = np.eye(4)
-        self.h, self.w = img.shape[0:2]
+        self.pose = pose
 
+        self.h, self.w = img.shape[0:2]
         self.kpus, self.des = extract(img)
-        self.kd = cKDTree(self.kpus)
-        self.kps = normalize(self.Kinv, self.kpus)
-        self.pts = [None]*len(self.kps)
-        
+
+        self.pts = [None]*len(self.kpus)
         self.id = mapp.add_frame(self)
+
+    @property
+    def Kinv(self):
+        if not hasattr(self, '_Kinv'):
+            self._Kinv = np.linalg.inv(self.K)
+        return self._Kinv
+
+    @property
+    def kps(self):
+        if not hasattr(self, '_kps'):
+            self._kps = normalize(self.Kinv, self.kpus)
+        return self._kps
+
+    @property
+    def kd(self):
+        if not hasattr(self, '_kd'):
+            self._kd = cKDTree(self.kpus)
+        return self._kd
 

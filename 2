@@ -91,7 +91,8 @@ class Map(object):
             pt.set_fixed(fix_points)
             opt.add_vertex(pt)
 
-            for f,idx in zip(p.frames, p.idxs):
+            for f in p.frames:
+            for f,idx in zip(p.frames, p.idx):
                 edge = g2o.EdgeProjectP2MC()
                 edge.set_vertex(0, pt)
                 edge.set_vertex(1, opt.vertex(f.id))
@@ -127,8 +128,8 @@ class Map(object):
 
                 # compute reprojection error
                 errs = []
-                for f, idx, in zip(p.frames, p.idxs):
-                    uv = f.kpus[idx]
+                for f, idx, in zip(p.frames, p.idx)
+                    uv = f.kpus[f.pts.index(p)]
                     proj = np.dot(np.dot(f.K, f.pose[:3]),
                                   np.array([est[0], est[1], est[2], 1.0]))
                     proj = proj[0:2] / proj[2]
